@@ -19,6 +19,7 @@ import ReactFlow, {
   Node,
   NodeChange,
   NodeMouseHandler,
+  Position,
   ReactFlowInstance,
 } from 'reactflow';
 
@@ -640,35 +641,40 @@ function isHandleAlreadyConnected(
 }
 
 function validateConnection(
-  connection: Connection,
+  connection: Connection | Edge,
   nodes: Node[],
   edges: Edge[]
 ): ValidationResult {
-  if (!connection.source || !connection.target) {
+  const source = connection.source;
+  const target = connection.target;
+  const sourceHandle = connection.sourceHandle ?? null;
+  const targetHandle = connection.targetHandle ?? null;
+
+  if (!source || !target) {
     return {
       kind: 'invalid',
       reason: 'Connection must have source and target.',
     };
   }
 
-  if (connection.source === connection.target) {
+  if (source === target) {
     return { kind: 'invalid', reason: 'A node cannot connect to itself.' };
   }
 
   const alreadyExists = edges.some(
     (edge) =>
-      edge.source === connection.source &&
-      edge.target === connection.target &&
-      (edge.sourceHandle ?? null) === (connection.sourceHandle ?? null) &&
-      (edge.targetHandle ?? null) === (connection.targetHandle ?? null)
+      edge.source === source &&
+      edge.target === target &&
+      (edge.sourceHandle ?? null) === sourceHandle &&
+      (edge.targetHandle ?? null) === targetHandle
   );
 
   if (alreadyExists) {
     return { kind: 'invalid', reason: 'This connection already exists.' };
   }
 
-  const sourceNode = nodes.find((node) => node.id === connection.source);
-  const targetNode = nodes.find((node) => node.id === connection.target);
+  const sourceNode = nodes.find((node) => node.id === source);
+  const targetNode = nodes.find((node) => node.id === target);
 
   if (!sourceNode || !targetNode) {
     return { kind: 'invalid', reason: 'Could not resolve connection nodes.' };
@@ -677,12 +683,12 @@ function validateConnection(
   const sourceVoltageRange = getOutputVoltageRange(sourceNode);
   const targetVoltageRange = getInputVoltageRange(targetNode);
 
-  const sourcePinType = getSourcePinType(sourceNode, connection.sourceHandle);
-  const targetPinType = getTargetPinType(targetNode, connection.targetHandle);
+  const sourcePinType = getSourcePinType(sourceNode, sourceHandle);
+  const targetPinType = getTargetPinType(targetNode, targetHandle);
 
   if (
     sourcePinType === 'gpio' &&
-    isHandleAlreadyConnected(connection.source, connection.sourceHandle, edges)
+    isHandleAlreadyConnected(source, sourceHandle, edges)
   ) {
     return {
       kind: 'invalid',
@@ -692,7 +698,7 @@ function validateConnection(
 
   if (
     targetPinType === 'gpio' &&
-    isHandleAlreadyConnected(connection.target, connection.targetHandle, edges)
+    isHandleAlreadyConnected(target, targetHandle, edges)
   ) {
     return {
       kind: 'invalid',
@@ -711,14 +717,8 @@ function validateConnection(
     };
   }
 
-  const sourceLogicWidth = getOutputLogicWidth(
-    sourceNode,
-    connection.sourceHandle
-  );
-  const targetLogicWidth = getInputLogicWidth(
-    targetNode,
-    connection.targetHandle
-  );
+  const sourceLogicWidth = getOutputLogicWidth(sourceNode, sourceHandle);
+  const targetLogicWidth = getInputLogicWidth(targetNode, targetHandle);
 
   const warnings: string[] = [];
 
@@ -898,8 +898,8 @@ export default function PCBCanvas() {
           config: getDefaultConfigByType(type),
         },
         position,
-        sourcePosition: 'right',
-        targetPosition: 'left',
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
         type,
       };
 
