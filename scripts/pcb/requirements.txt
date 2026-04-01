@@ -1,1 +1,1 @@
-gerber-writer>=0.4.3
+git+https://github.com/michaelgale/pcbflow.git

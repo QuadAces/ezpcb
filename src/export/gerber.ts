@@ -9,23 +9,28 @@ import { FlattenedPcb } from '@/types/pcb';
 
 const execFileAsync = promisify(execFile);
 
+export type GerberExportOptions = {
+  silkscreenStrokeMm?: number;
+};
+
 async function runPython(
   scriptPath: string,
   inputPath: string,
-  outputDir: string
+  outputDir: string,
+  options?: GerberExportOptions
 ) {
-  const commands = ['python3', 'python'];
+  const workspacePython = path.join(process.cwd(), '.venv', 'bin', 'python');
+  const commands = [workspacePython, 'python3', 'python'];
   let lastError: unknown;
+
+  const args = [scriptPath, '--input', inputPath, '--output', outputDir];
+  if (typeof options?.silkscreenStrokeMm === 'number') {
+    args.push('--silk-stroke-mm', String(options.silkscreenStrokeMm));
+  }
 
   for (const command of commands) {
     try {
-      await execFileAsync(command, [
-        scriptPath,
-        '--input',
-        inputPath,
-        '--output',
-        outputDir,
-      ]);
+      await execFileAsync(command, args);
       return;
     } catch (error) {
       lastError = error;
@@ -55,7 +60,8 @@ async function runPython(
 }
 
 export async function generateGerberZip(
-  flattened: FlattenedPcb
+  flattened: FlattenedPcb,
+  options?: GerberExportOptions
 ): Promise<Buffer> {
   const workspaceRoot = process.cwd();
   const scriptPath = path.join(
@@ -71,7 +77,7 @@ export async function generateGerberZip(
   await fs.mkdir(outputDir, { recursive: true });
   await fs.writeFile(inputPath, JSON.stringify(flattened, null, 2), 'utf8');
 
-  await runPython(scriptPath, inputPath, outputDir);
+  await runPython(scriptPath, inputPath, outputDir, options);
 
   const zip = new JSZip();
   const entries = await fs.readdir(outputDir, { withFileTypes: true });

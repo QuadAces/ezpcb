@@ -147,15 +147,44 @@ function createPadAnchors(
 }
 
 export default function PcbNode({ data, selected }: PcbNodeProps) {
+  const isTextAnnotation = data.kind === 'textAnnotation';
   const isLayoutComponent =
     data.viewMode === 'layout' && data.kind === 'component';
 
+  if (isTextAnnotation) {
+    const mmToCanvas = data.layoutMmToCanvas ?? 1;
+    const fontSizePx = Math.max(10, (data.textSizeMm ?? 1.6) * mmToCanvas * 5);
+
+    return (
+      <div
+        className='relative select-none'
+        style={{
+          fontSize: fontSizePx,
+          lineHeight: 1,
+          color: data.layer === 'top' ? '#7f1d1d' : '#1e3a8a',
+          textShadow: selected ? '0 0 0.5px #111827' : 'none',
+        }}
+      >
+        {data.label}
+      </div>
+    );
+  }
+
   if (isLayoutComponent) {
-    const mmToCanvas = data.layoutMmToCanvas ?? 6;
-    const bodyWidth = Math.max(12, data.bounds.width * mmToCanvas);
-    const bodyHeight = Math.max(12, data.bounds.height * mmToCanvas);
-    const padLength = clamp(Math.min(bodyWidth, bodyHeight) * 0.22, 4, 12);
-    const padThickness = clamp(Math.min(bodyWidth, bodyHeight) * 0.18, 3, 8);
+    const mmToCanvas = data.layoutMmToCanvas ?? 1;
+    const layoutVisualScale = data.layoutVisualScale ?? 10;
+    const bodyWidth = Math.max(
+      28,
+      data.bounds.width * mmToCanvas * layoutVisualScale
+    );
+    const bodyHeight = Math.max(
+      20,
+      data.bounds.height * mmToCanvas * layoutVisualScale
+    );
+    const padLength = clamp(Math.min(bodyWidth, bodyHeight) * 0.2, 4, 14);
+    const padThickness = clamp(Math.min(bodyWidth, bodyHeight) * 0.16, 3, 10);
+    const labelFontSize = clamp(Math.min(bodyWidth, bodyHeight) * 0.28, 9, 22);
+    const labelYOffset = labelFontSize * 0.35;
     const width = bodyWidth;
     const height = bodyHeight;
 
@@ -209,9 +238,10 @@ export default function PcbNode({ data, selected }: PcbNodeProps) {
           })}
           <text
             x={width / 2}
-            y={height / 2 + 3}
+            y={height / 2 + labelYOffset}
             textAnchor='middle'
-            className='select-none fill-slate-800 text-[10px] font-semibold'
+            style={{ fontSize: labelFontSize }}
+            className='select-none fill-slate-800 font-semibold'
           >
             {data.label}
           </text>

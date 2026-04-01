@@ -32,6 +32,15 @@ export type Trace = {
   vias: Via[];
 };
 
+export type PcbText = {
+  id: string;
+  text: string;
+  position: Position;
+  sizeMm: number;
+  rotation: number;
+  layer: Layer;
+};
+
 export type Component = {
   id: string;
   type: string;
@@ -89,6 +98,7 @@ export type PcbProject = {
   name: string;
   rootModule: Module;
   traces: Trace[];
+  texts: PcbText[];
   moduleLibrary: Record<string, Module>;
   gridSizeMm: number;
   board: {
@@ -103,6 +113,7 @@ export type FlattenedPcb = {
   components: Component[];
   nets: Net[];
   traces: Trace[];
+  texts: PcbText[];
   board: PcbProject['board'];
 };
 

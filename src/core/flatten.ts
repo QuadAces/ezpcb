@@ -176,6 +176,7 @@ export function flattenProject(project: PcbProject): FlattenedPcb {
     components,
     nets,
     traces: project.traces,
+    texts: project.texts,
     board: project.board,
   };
 }

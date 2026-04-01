@@ -4,6 +4,9 @@ import { generateGerberZip } from '@/export/gerber';
 
 type GerberRequest = {
   flattened: unknown;
+  options?: {
+    silkscreenStrokeMm?: number;
+  };
 };
 
 export const runtime = 'nodejs';
@@ -18,7 +21,9 @@ export async function POST(request: Request) {
       );
     }
 
-    const zipBuffer = await generateGerberZip(body.flattened as never);
+    const zipBuffer = await generateGerberZip(body.flattened as never, {
+      silkscreenStrokeMm: body.options?.silkscreenStrokeMm,
+    });
 
     return new NextResponse(new Uint8Array(zipBuffer), {
       status: 200,

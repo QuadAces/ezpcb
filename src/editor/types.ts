@@ -2,18 +2,21 @@ import { Edge, Node } from '@xyflow/react';
 
 import { Layer, Pin, Position, Via } from '@/types/pcb';
 
-export type NodeKind = 'component' | 'moduleInstance';
+export type NodeKind = 'component' | 'moduleInstance' | 'textAnnotation';
 
 export type EditorNodeData = {
   kind: NodeKind;
+  annotationMode?: 'schematic' | 'layout';
   viewMode?: 'schematic' | 'layout';
   layoutMmToCanvas?: number;
+  layoutVisualScale?: number;
   label: string;
   footprint: string;
   value?: string;
   lcscPartNumber?: string;
   manufacturerPartNumber?: string;
   partDescription?: string;
+  textSizeMm?: number;
   rotation: number;
   layer: Layer;
   pins: Pin[];

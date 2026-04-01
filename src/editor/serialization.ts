@@ -8,6 +8,7 @@ import {
   Net,
   NetConnection,
   PcbProject,
+  PcbText,
   Pin,
   Position,
   Trace,
@@ -256,10 +257,29 @@ export function buildProjectFromEditor(
     .map((edge) => traceFromEdge(edge, nodesById, pinNetMap))
     .filter((trace): trace is Trace => trace !== null);
 
+  const texts: PcbText[] = nodes
+    .filter(
+      (node) =>
+        node.data.kind === 'textAnnotation' &&
+        (node.data.annotationMode ?? 'layout') === 'layout'
+    )
+    .map((node) => ({
+      id: node.id,
+      text: node.data.label,
+      position: {
+        x: node.position.x,
+        y: node.position.y,
+      },
+      sizeMm: Math.max(0.8, node.data.textSizeMm ?? 1.6),
+      rotation: node.data.rotation,
+      layer: node.data.layer,
+    }));
+
   return {
     id: projectId,
     name: projectName,
     traces,
+    texts,
     moduleLibrary,
     gridSizeMm,
     board,

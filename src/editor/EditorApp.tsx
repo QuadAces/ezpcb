@@ -46,10 +46,13 @@ type PersistedEditorState = {
   edges: PcbFlowEdge[];
   moduleLibrary: Record<string, Module>;
   designatorCount: number;
+  schematicPositions?: Record<string, { x: number; y: number }>;
+  layoutPositions?: Record<string, { x: number; y: number }>;
   boardCenter?: { x: number; y: number };
   boardWidthMm?: number;
   boardHeightMm?: number;
   boardFitMarginMm?: number;
+  gerberSilkStrokeMm?: number;
   showBoardReference?: boolean;
 };
 
@@ -122,9 +125,19 @@ function getPinToken(nodeId: string, pinId: string) {
   return `${nodeId}:${pinId}`;
 }
 
+function createPositionMap(nodes: PcbFlowNode[]) {
+  return Object.fromEntries(
+    nodes.map((node) => [node.id, { x: node.position.x, y: node.position.y }])
+  );
+}
+
 function EditorShell() {
   const layoutMmToCanvas = 1;
-  const { screenToFlowPosition } = useReactFlow<PcbFlowNode, PcbFlowEdge>();
+  const layoutVisualScale = 10;
+  const { screenToFlowPosition, setCenter } = useReactFlow<
+    PcbFlowNode,
+    PcbFlowEdge
+  >();
   const initial = React.useMemo(createInitialState, []);
   const [nodes, setNodes, onNodesChange] = useNodesState<PcbFlowNode>(
     initial.nodes
@@ -144,6 +157,12 @@ function EditorShell() {
   const [designatorCount, setDesignatorCount] = React.useState(
     initial.designatorCount
   );
+  const [schematicPositions, setSchematicPositions] = React.useState<
+    Record<string, { x: number; y: number }>
+  >(createPositionMap(initial.nodes));
+  const [layoutPositions, setLayoutPositions] = React.useState<
+    Record<string, { x: number; y: number }>
+  >(createPositionMap(initial.nodes));
   const [gridSizeMm, setGridSizeMm] = React.useState(5);
   const [status, setStatus] = React.useState('Ready');
   const [jlcQuery, setJlcQuery] = React.useState('');
@@ -160,6 +179,8 @@ function EditorShell() {
   const [boardWidthMm, setBoardWidthMm] = React.useState(100);
   const [boardHeightMm, setBoardHeightMm] = React.useState(80);
   const [boardFitMarginMm, setBoardFitMarginMm] = React.useState(10);
+  const [gerberSilkStrokeMm, setGerberSilkStrokeMm] = React.useState(0.06);
+  const [layoutViewZoom, setLayoutViewZoom] = React.useState(6);
 
   React.useEffect(() => {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -173,15 +194,49 @@ function EditorShell() {
       setEdges(parsed.edges);
       setModuleLibrary(parsed.moduleLibrary ?? {});
       setDesignatorCount(parsed.designatorCount ?? designatorCount);
+      setSchematicPositions(
+        parsed.schematicPositions ?? createPositionMap(parsed.nodes)
+      );
+      setLayoutPositions(
+        parsed.layoutPositions ?? createPositionMap(parsed.nodes)
+      );
       setBoardCenter(parsed.boardCenter ?? { x: 200, y: 180 });
       setBoardWidthMm(parsed.boardWidthMm ?? 100);
       setBoardHeightMm(parsed.boardHeightMm ?? 80);
       setBoardFitMarginMm(parsed.boardFitMarginMm ?? 10);
+      setGerberSilkStrokeMm(parsed.gerberSilkStrokeMm ?? 0.06);
       setShowBoardReference(parsed.showBoardReference ?? true);
     } catch {
       setStatus('Failed to load saved design');
     }
   }, [setEdges, setNodes, designatorCount]);
+
+  React.useEffect(() => {
+    setNodes((current) =>
+      current.map((node) => {
+        const nextPosition =
+          editorMode === 'layout'
+            ? layoutPositions[node.id] ?? node.position
+            : schematicPositions[node.id] ?? node.position;
+
+        return {
+          ...node,
+          position: nextPosition,
+        };
+      })
+    );
+  }, [editorMode, layoutPositions, schematicPositions, setNodes]);
+
+  React.useEffect(() => {
+    if (editorMode !== 'layout') {
+      return;
+    }
+
+    setCenter(boardCenter.x, boardCenter.y, {
+      zoom: layoutViewZoom,
+      duration: 250,
+    });
+  }, [boardCenter.x, boardCenter.y, editorMode, layoutViewZoom, setCenter]);
 
   const onConnect = React.useCallback(
     (connection: Connection) => {
@@ -287,9 +342,18 @@ function EditorShell() {
   }, [edges, pinNetMap]);
 
   const visibleNodes = React.useMemo(() => {
+    const modeFiltered = nodes.filter((node) => {
+      if (node.data.kind !== 'textAnnotation') {
+        return true;
+      }
+
+      const annotationMode = node.data.annotationMode ?? 'layout';
+      return annotationMode === editorMode;
+    });
+
     const layerFiltered =
       editorMode === 'layout'
-        ? nodes.filter((node) => {
+        ? modeFiltered.filter((node) => {
             if (node.data.kind !== 'component') {
               return true;
             }
@@ -300,7 +364,7 @@ function EditorShell() {
 
             return showBottomLayer;
           })
-        : nodes;
+        : modeFiltered;
 
     if (editorMode === 'schematic') {
       return layerFiltered.map((node) => ({
@@ -309,6 +373,7 @@ function EditorShell() {
           ...node.data,
           viewMode: 'schematic' as const,
           layoutMmToCanvas,
+          layoutVisualScale,
         },
       }));
     }
@@ -321,6 +386,7 @@ function EditorShell() {
           ...node.data,
           viewMode: 'layout' as const,
           layoutMmToCanvas,
+          layoutVisualScale,
         },
         style: {
           ...node.style,
@@ -333,7 +399,14 @@ function EditorShell() {
         },
       };
     });
-  }, [editorMode, layoutMmToCanvas, nodes, showBottomLayer, showTopLayer]);
+  }, [
+    editorMode,
+    layoutMmToCanvas,
+    layoutVisualScale,
+    nodes,
+    showBottomLayer,
+    showTopLayer,
+  ]);
 
   const visibleNodeIds = React.useMemo(
     () => new Set(visibleNodes.map((node) => node.id)),
@@ -453,6 +526,14 @@ function EditorShell() {
           },
         },
       ]);
+      setLayoutPositions((current) => ({
+        ...current,
+        [component.id]: { ...component.position },
+      }));
+      setSchematicPositions((current) => ({
+        ...current,
+        [component.id]: { ...component.position },
+      }));
       setDesignatorCount((count) => count + 1);
     },
     [designatorCount, setNodes]
@@ -518,6 +599,14 @@ function EditorShell() {
       };
 
       setNodes((current) => [...current, node]);
+      setLayoutPositions((current) => ({
+        ...current,
+        [node.id]: { ...node.position },
+      }));
+      setSchematicPositions((current) => ({
+        ...current,
+        [node.id]: { ...node.position },
+      }));
       setDesignatorCount(index);
       setStatus(
         `Placed ${part.manufacturerPartNumber} (${part.lcscPartNumber})`
@@ -635,9 +724,59 @@ function EditorShell() {
           },
         },
       ]);
+      setLayoutPositions((current) => ({
+        ...current,
+        [id]: { x: 220, y: 220 },
+      }));
+      setSchematicPositions((current) => ({
+        ...current,
+        [id]: { x: 220, y: 220 },
+      }));
     },
     [moduleLibrary, setNodes]
   );
+
+  const addTextAnnotation = React.useCallback(() => {
+    const text = 'TEXT';
+    const sizeMm = 1.6;
+    const id = `txt_${crypto.randomUUID()}`;
+    const width = Math.max(8, text.length * sizeMm * 0.62);
+    const height = Math.max(1.2, sizeMm * 1.2);
+
+    const position = snapToGrid(
+      { x: boardCenter.x, y: boardCenter.y },
+      gridSizeMm
+    );
+
+    setNodes((current) => [
+      ...current,
+      {
+        id,
+        type: 'pcbNode',
+        position,
+        data: {
+          kind: 'textAnnotation',
+          annotationMode: editorMode,
+          label: text,
+          footprint: 'TEXT',
+          textSizeMm: sizeMm,
+          rotation: 0,
+          layer: 'top',
+          pins: [],
+          bounds: { width, height },
+        },
+      },
+    ]);
+    setLayoutPositions((current) => ({
+      ...current,
+      [id]: { ...position },
+    }));
+    setSchematicPositions((current) => ({
+      ...current,
+      [id]: { ...position },
+    }));
+    setStatus('Added text annotation');
+  }, [boardCenter.x, boardCenter.y, editorMode, gridSizeMm, setNodes]);
 
   const updateActiveNode = React.useCallback(
     (
@@ -794,19 +933,31 @@ function EditorShell() {
 
   const onNodeDragStop = React.useCallback(
     (_event: unknown, node: PcbFlowNode) => {
-      const snapped = snapToGrid(node.position, gridSizeMm);
-      setNodes((current) =>
-        current.map((candidate) =>
-          candidate.id === node.id
-            ? {
-                ...candidate,
-                position: snapped,
-              }
-            : candidate
-        )
-      );
+      if (editorMode === 'layout') {
+        const snapped = snapToGrid(node.position, gridSizeMm);
+        setNodes((current) =>
+          current.map((candidate) =>
+            candidate.id === node.id
+              ? {
+                  ...candidate,
+                  position: snapped,
+                }
+              : candidate
+          )
+        );
+        setLayoutPositions((current) => ({
+          ...current,
+          [node.id]: snapped,
+        }));
+        return;
+      }
+
+      setSchematicPositions((current) => ({
+        ...current,
+        [node.id]: { x: node.position.x, y: node.position.y },
+      }));
     },
-    [gridSizeMm, setNodes]
+    [editorMode, gridSizeMm, setNodes]
   );
 
   const saveDesign = React.useCallback(() => {
@@ -815,10 +966,13 @@ function EditorShell() {
       edges,
       moduleLibrary,
       designatorCount,
+      schematicPositions,
+      layoutPositions,
       boardCenter,
       boardWidthMm,
       boardHeightMm,
       boardFitMarginMm,
+      gerberSilkStrokeMm,
       showBoardReference,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -828,10 +982,13 @@ function EditorShell() {
     edges,
     moduleLibrary,
     designatorCount,
+    schematicPositions,
+    layoutPositions,
     boardCenter,
     boardWidthMm,
     boardHeightMm,
     boardFitMarginMm,
+    gerberSilkStrokeMm,
     showBoardReference,
   ]);
 
@@ -871,7 +1028,13 @@ function EditorShell() {
     const response = await fetch('/api/export/gerber', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project, flattened }),
+      body: JSON.stringify({
+        project,
+        flattened,
+        options: {
+          silkscreenStrokeMm: gerberSilkStrokeMm,
+        },
+      }),
     });
 
     if (!response.ok) {
@@ -890,7 +1053,7 @@ function EditorShell() {
     const blob = await response.blob();
     downloadBlob(blob, 'pcb_gerber.zip');
     setStatus('Gerber ZIP exported');
-  }, [buildProject]);
+  }, [buildProject, gerberSilkStrokeMm]);
 
   const exportPnp = React.useCallback(async () => {
     const project = buildProject();
@@ -1146,6 +1309,20 @@ function EditorShell() {
       ...current.filter((node) => !idsToRemove.has(node.id)),
       instanceNode,
     ]);
+    setLayoutPositions((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([id]) => !idsToRemove.has(id))
+      );
+      next[instanceId] = { ...centroid };
+      return next;
+    });
+    setSchematicPositions((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([id]) => !idsToRemove.has(id))
+      );
+      next[instanceId] = { ...centroid };
+      return next;
+    });
 
     setEdges((current) => {
       const kept = current.filter(
@@ -1266,6 +1443,14 @@ function EditorShell() {
             )}
           </div>
 
+          <h2 className='mb-2 mt-5 text-sm font-semibold'>Text</h2>
+          <button
+            className='mb-1 w-full rounded border border-slate-300 px-3 py-2 text-left text-sm hover:border-slate-500'
+            onClick={addTextAnnotation}
+          >
+            Add Layout Text
+          </button>
+
           <h2 className='mb-2 mt-5 text-sm font-semibold'>
             Real Parts Catalog
           </h2>
@@ -1332,6 +1517,8 @@ function EditorShell() {
             onDrop={onCanvasDrop}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
+            minZoom={0.05}
+            maxZoom={40}
             fitView
           >
             <Background
@@ -1353,10 +1540,16 @@ function EditorShell() {
                 <div
                   className='pointer-events-none absolute border-2 border-dashed border-emerald-600/70 bg-emerald-100/20'
                   style={{
-                    left: boardCenter.x - boardWidthMm / 2,
-                    top: boardCenter.y - boardHeightMm / 2,
-                    width: boardWidthMm,
-                    height: boardHeightMm,
+                    left:
+                      boardCenter.x -
+                      (boardWidthMm * layoutMmToCanvas * layoutVisualScale) / 2,
+                    top:
+                      boardCenter.y -
+                      (boardHeightMm * layoutMmToCanvas * layoutVisualScale) /
+                        2,
+                    width: boardWidthMm * layoutMmToCanvas * layoutVisualScale,
+                    height:
+                      boardHeightMm * layoutMmToCanvas * layoutVisualScale,
                   }}
                 />
               </ViewportPortal>
@@ -1454,9 +1647,25 @@ function EditorShell() {
                 <input
                   className='w-full rounded border border-slate-300 px-2 py-1'
                   value={activeNode.data.label}
-                  onChange={(event) =>
-                    updateActiveNode({ label: event.target.value })
-                  }
+                  onChange={(event) => {
+                    const nextLabel = event.target.value;
+                    const textSizeMm = activeNode.data.textSizeMm ?? 1.6;
+
+                    updateActiveNode({
+                      label: nextLabel,
+                      ...(activeNode.data.kind === 'textAnnotation'
+                        ? {
+                            bounds: {
+                              width: Math.max(
+                                8,
+                                nextLabel.length * textSizeMm * 0.62
+                              ),
+                              height: Math.max(1.2, textSizeMm * 1.2),
+                            },
+                          }
+                        : {}),
+                    });
+                  }}
                 />
               </label>
               <label className='block'>
@@ -1469,8 +1678,41 @@ function EditorShell() {
                   onChange={(event) =>
                     updateActiveNode({ footprint: event.target.value })
                   }
+                  disabled={activeNode.data.kind === 'textAnnotation'}
                 />
               </label>
+              {activeNode.data.kind === 'textAnnotation' && (
+                <label className='block'>
+                  <span className='mb-1 block text-xs text-slate-600'>
+                    Text Height (mm)
+                  </span>
+                  <input
+                    type='number'
+                    min={0.8}
+                    step={0.1}
+                    className='w-full rounded border border-slate-300 px-2 py-1'
+                    value={activeNode.data.textSizeMm ?? 1.6}
+                    onChange={(event) => {
+                      const nextSize = Math.max(
+                        0.8,
+                        Number(event.target.value)
+                      );
+                      const nextLabel = activeNode.data.label || 'TEXT';
+
+                      updateActiveNode({
+                        textSizeMm: nextSize,
+                        bounds: {
+                          width: Math.max(
+                            8,
+                            nextLabel.length * nextSize * 0.62
+                          ),
+                          height: Math.max(1.2, nextSize * 1.2),
+                        },
+                      });
+                    }}
+                  />
+                </label>
+              )}
               <label className='block'>
                 <span className='mb-1 block text-xs text-slate-600'>
                   Position X (mm)
@@ -1685,6 +1927,47 @@ function EditorShell() {
               >
                 Fit to Components + Margin
               </button>
+
+              <p className='mb-1 mt-3 text-xs font-semibold text-slate-700'>
+                Gerber Export
+              </p>
+              <label className='mb-1 block text-xs text-slate-600'>
+                Silkscreen Text Stroke (mm)
+              </label>
+              <input
+                type='number'
+                className='mb-1 w-full rounded border border-slate-300 px-2 py-1 text-sm'
+                min={0.04}
+                max={0.2}
+                step={0.01}
+                value={gerberSilkStrokeMm}
+                onChange={(event) =>
+                  setGerberSilkStrokeMm(
+                    Math.min(0.2, Math.max(0.04, Number(event.target.value)))
+                  )
+                }
+              />
+              <p className='text-[11px] text-slate-600'>
+                Used for Gerber text thickness on top and bottom silkscreen.
+              </p>
+
+              <label className='mb-1 mt-3 block text-xs text-slate-600'>
+                Layout View Zoom
+              </label>
+              <input
+                type='range'
+                className='w-full'
+                min={1}
+                max={20}
+                step={0.5}
+                value={layoutViewZoom}
+                onChange={(event) =>
+                  setLayoutViewZoom(Number(event.target.value))
+                }
+              />
+              <p className='text-[11px] text-slate-600'>
+                Visual zoom only. Physical/export scale remains 1:1.
+              </p>
             </div>
           )}
 
