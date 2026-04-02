@@ -14,13 +14,124 @@ from pcbflow.hershey import text as hershey_text
 DEFAULT_SILK_STROKE_MM = 0.06
 MIN_SILK_STROKE_MM = 0.04
 MAX_SILK_STROKE_MM = 0.20
-DEFAULT_COMPONENT_MARKER_MM = 0.4
-DEFAULT_COMPONENT_DRILL_MM = 0.3
 DEFAULT_TRACE_WIDTH_MM = 0.25
 DEFAULT_VIA_PAD_MM = 0.6
 DEFAULT_VIA_DRILL_MM = 0.3
 MIN_DRILL_MM = 0.05
 MIN_PAD_MM = 0.1
+
+
+def distribute_pins_across_sides(
+    count: int, body_width: float, body_height: float
+) -> dict[str, int]:
+    if count <= 1:
+        return {"left": 0, "right": 1, "top": 0, "bottom": 0}
+
+    if count == 2:
+        return {"left": 1, "right": 1, "top": 0, "bottom": 0}
+
+    if count == 3:
+        return {"left": 1, "right": 1, "top": 1, "bottom": 0}
+
+    side_order = ["top", "right", "bottom", "left"]
+    side_lengths = {
+        "top": body_width,
+        "bottom": body_width,
+        "left": body_height,
+        "right": body_height,
+    }
+    total_length = sum(side_lengths.values())
+
+    base = {
+        side: int((count * side_lengths[side]) // total_length)
+        for side in side_order
+    }
+
+    if count >= 4:
+        for side in side_order:
+            if base[side] == 0:
+                base[side] = 1
+
+    assigned = base["top"] + base["right"] + base["bottom"] + base["left"]
+    remaining = count - assigned
+
+    ranking = sorted(
+        (
+            {
+                "side": side,
+                "frac": (count * side_lengths[side] / total_length)
+                - int(count * side_lengths[side] / total_length),
+            }
+            for side in side_order
+        ),
+        key=lambda item: item["frac"],
+        reverse=True,
+    )
+
+    rank_index = 0
+    while remaining > 0:
+        side = ranking[rank_index % len(ranking)]["side"]
+        base[side] += 1
+        remaining -= 1
+        rank_index += 1
+
+    while remaining < 0:
+        candidates = [side for side in side_order if base[side] > 1]
+        if not candidates:
+            break
+        side = candidates[rank_index % len(candidates)]
+        base[side] -= 1
+        remaining += 1
+        rank_index += 1
+
+    return {
+        "left": base["left"],
+        "right": base["right"],
+        "top": base["top"],
+        "bottom": base["bottom"],
+    }
+
+
+def create_pad_anchors(
+    pin_ids: list[str], body_width: float, body_height: float
+) -> list[dict[str, Any]]:
+    counts = distribute_pins_across_sides(len(pin_ids), body_width, body_height)
+    sides: list[str] = []
+
+    sides.extend(["top"] * counts["top"])
+    sides.extend(["right"] * counts["right"])
+    sides.extend(["bottom"] * counts["bottom"])
+    sides.extend(["left"] * counts["left"])
+
+    if not sides:
+        sides = ["right"]
+
+    by_side: dict[str, list[str]] = {
+        "top": [],
+        "right": [],
+        "bottom": [],
+        "left": [],
+    }
+
+    for index, pin_id in enumerate(pin_ids):
+        side = sides[index % len(sides)]
+        by_side[side].append(pin_id)
+
+    anchors: list[dict[str, Any]] = []
+    for side in ("top", "right", "bottom", "left"):
+        side_pins = by_side[side]
+        for index, pin_id in enumerate(side_pins):
+            t = (index + 1) / (len(side_pins) + 1)
+            x = 0.0 if side == "left" else body_width if side == "right" else t * body_width
+            y = 0.0 if side == "top" else body_height if side == "bottom" else t * body_height
+            anchors.append({"id": pin_id, "side": side, "x": x, "y": y})
+
+    return anchors
+
+
+def component_pad_diameter_mm(body_width: float, body_height: float) -> float:
+    base = min(body_width, body_height) * 0.24
+    return clamp(base, 0.35, 1.2)
 
 
 @dataclass(frozen=True)
@@ -131,15 +242,31 @@ class GerberExporter:
         for component in self.pcb_data.get("components", []):
             x_mm = safe_float(component.get("position", {}).get("x"), 0.0)
             y_mm = safe_float(component.get("position", {}).get("y"), 0.0)
-            local_xy = to_board_local(x_mm, y_mm, self.board)
             layer = "GBL" if component.get("layer", "top") == "bottom" else "GTL"
+            bounds = component.get("bounds", {})
+            body_width = max(0.1, safe_float(bounds.get("width"), 2.0))
+            body_height = max(0.1, safe_float(bounds.get("height"), 1.25))
 
-            add_geometry(
-                board,
-                layer,
-                buffered_point(*local_xy, DEFAULT_COMPONENT_MARKER_MM),
-            )
-            add_hole(drills, DEFAULT_COMPONENT_DRILL_MM, local_xy)
+            pins = component.get("pins", [])
+            pin_ids = [str(pin.get("id", "")) for pin in pins if str(pin.get("id", ""))]
+            if not pin_ids:
+                pin_ids = ["1"]
+
+            net_by_pin = {
+                str(pin.get("id", "")): pin.get("netId")
+                for pin in pins
+                if str(pin.get("id", ""))
+            }
+
+            anchors = create_pad_anchors(pin_ids, body_width, body_height)
+            pad_diameter = component_pad_diameter_mm(body_width, body_height)
+
+            for anchor in anchors:
+                pin_x = x_mm + (safe_float(anchor.get("x"), 0.0) - body_width / 2)
+                pin_y = y_mm + (safe_float(anchor.get("y"), 0.0) - body_height / 2)
+                local_xy = to_board_local(pin_x, pin_y, self.board)
+                net_name = net_by_pin.get(str(anchor.get("id", "")))
+                add_geometry(board, layer, buffered_point(*local_xy, pad_diameter), net_name)
 
     def _export_traces(
         self, board: Board, drills: dict[float, list[tuple[float, float]]]

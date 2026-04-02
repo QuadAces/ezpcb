@@ -295,6 +295,11 @@ function traceFromEdge(
   nodesById: Map<string, PcbFlowNode>,
   pinNetMap: Map<string, string>
 ): Trace | null {
+  const isRouted = edge.data?.isRouted ?? true;
+  if (!isRouted) {
+    return null;
+  }
+
   if (!edge.sourceHandle || !edge.targetHandle) {
     return null;
   }

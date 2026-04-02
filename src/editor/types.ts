@@ -32,6 +32,7 @@ export type TraceEdgeData = {
   gridSizeMm?: number;
   waypoints?: Position[];
   vias?: Via[];
+  isRouted?: boolean;
 };
 
 export type PcbFlowEdge = Edge<TraceEdgeData, 'editableTrace' | 'default'>;

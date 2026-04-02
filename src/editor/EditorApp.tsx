@@ -27,7 +27,7 @@ import PcbNode from '@/editor/components/PcbNode';
 import { buildNets, buildProjectFromEditor } from '@/editor/serialization';
 import { EditorNodeData, PcbFlowEdge, PcbFlowNode } from '@/editor/types';
 
-import { Module } from '@/types/pcb';
+import { Layer, Module, Position } from '@/types/pcb';
 
 const STORAGE_KEY = 'pcb-editor-state-v1';
 
@@ -40,6 +40,23 @@ const edgeTypes = {
 };
 
 type EditorMode = 'schematic' | 'layout';
+
+type PadSide = 'left' | 'right' | 'top' | 'bottom';
+
+type PadAnchor = {
+  id: string;
+  side: PadSide;
+  x: number;
+  y: number;
+};
+
+type ActiveRouteState = {
+  edgeId: string;
+  start: Position;
+  end: Position;
+  waypoints: Position[];
+  cursor: Position;
+};
 
 type PersistedEditorState = {
   nodes: PcbFlowNode[];
@@ -90,6 +107,7 @@ function createInitialState(): PersistedEditorState {
           traceLayer: 'top',
           waypoints: [],
           vias: [],
+          isRouted: false,
         },
       },
       {
@@ -104,6 +122,7 @@ function createInitialState(): PersistedEditorState {
           traceLayer: 'bottom',
           waypoints: [],
           vias: [],
+          isRouted: false,
         },
       },
     ],
@@ -137,6 +156,134 @@ function toPhysicalMm(value: number, visualScale: number) {
   }
 
   return value / visualScale;
+}
+
+function distributePinsAcrossSides(
+  count: number,
+  bodyWidth: number,
+  bodyHeight: number
+) {
+  if (count <= 1) {
+    return { left: 0, right: 1, top: 0, bottom: 0 };
+  }
+
+  if (count === 2) {
+    return { left: 1, right: 1, top: 0, bottom: 0 };
+  }
+
+  if (count === 3) {
+    return { left: 1, right: 1, top: 1, bottom: 0 };
+  }
+
+  const sideOrder: PadSide[] = ['top', 'right', 'bottom', 'left'];
+  const sideLengths: Record<PadSide, number> = {
+    top: bodyWidth,
+    bottom: bodyWidth,
+    left: bodyHeight,
+    right: bodyHeight,
+  };
+
+  const totalLength =
+    sideLengths.top + sideLengths.bottom + sideLengths.left + sideLengths.right;
+
+  const base: Record<PadSide, number> = {
+    top: Math.floor((count * sideLengths.top) / totalLength),
+    right: Math.floor((count * sideLengths.right) / totalLength),
+    bottom: Math.floor((count * sideLengths.bottom) / totalLength),
+    left: Math.floor((count * sideLengths.left) / totalLength),
+  };
+
+  if (count >= 4) {
+    sideOrder.forEach((side) => {
+      if (base[side] === 0) {
+        base[side] = 1;
+      }
+    });
+  }
+
+  const assigned = base.top + base.right + base.bottom + base.left;
+  let remaining = count - assigned;
+
+  const ranking = sideOrder
+    .map((side) => {
+      const exact = (count * sideLengths[side]) / totalLength;
+      return { side, frac: exact - Math.floor(exact) };
+    })
+    .sort((a, b) => b.frac - a.frac);
+
+  let rankIndex = 0;
+  while (remaining > 0) {
+    const side = ranking[rankIndex % ranking.length].side;
+    base[side] += 1;
+    remaining -= 1;
+    rankIndex += 1;
+  }
+
+  while (remaining < 0) {
+    const candidates = sideOrder.filter((side) => base[side] > 1);
+    if (candidates.length === 0) {
+      break;
+    }
+    const side = candidates[rankIndex % candidates.length];
+    base[side] -= 1;
+    remaining += 1;
+    rankIndex += 1;
+  }
+
+  return {
+    left: base.left,
+    right: base.right,
+    top: base.top,
+    bottom: base.bottom,
+  };
+}
+
+function createPadAnchors(
+  pins: PcbFlowNode['data']['pins'],
+  bodyWidth: number,
+  bodyHeight: number
+): PadAnchor[] {
+  const counts = distributePinsAcrossSides(pins.length, bodyWidth, bodyHeight);
+  const sides: PadSide[] = [];
+
+  for (let i = 0; i < counts.top; i += 1) sides.push('top');
+  for (let i = 0; i < counts.right; i += 1) sides.push('right');
+  for (let i = 0; i < counts.bottom; i += 1) sides.push('bottom');
+  for (let i = 0; i < counts.left; i += 1) sides.push('left');
+
+  const bySide: Record<PadSide, string[]> = {
+    top: [],
+    right: [],
+    bottom: [],
+    left: [],
+  };
+
+  pins.forEach((pin, index) => {
+    const side = sides[index % sides.length] ?? 'right';
+    bySide[side].push(pin.id);
+  });
+
+  const anchors: PadAnchor[] = [];
+
+  (['top', 'right', 'bottom', 'left'] as const).forEach((side) => {
+    const sidePins = bySide[side];
+    sidePins.forEach((pinId, index) => {
+      const t = (index + 1) / (sidePins.length + 1);
+      const x =
+        side === 'left' ? 0 : side === 'right' ? bodyWidth : t * bodyWidth;
+      const y =
+        side === 'top' ? 0 : side === 'bottom' ? bodyHeight : t * bodyHeight;
+
+      anchors.push({
+        id: pinId,
+        side,
+        x,
+        y,
+      });
+    });
+  });
+
+  return anchors;
 }
 
 function EditorShell() {
@@ -189,6 +336,12 @@ function EditorShell() {
   const [boardFitMarginMm, setBoardFitMarginMm] = React.useState(10);
   const [gerberSilkStrokeMm, setGerberSilkStrokeMm] = React.useState(0.06);
   const [layoutViewZoom, setLayoutViewZoom] = React.useState(6);
+  const [traceToolEnabled, setTraceToolEnabled] = React.useState(false);
+  const [traceToolLayer, setTraceToolLayer] = React.useState<Layer>('top');
+  const [traceToolWidthMm, setTraceToolWidthMm] = React.useState(0.25);
+  const [activeRoute, setActiveRoute] = React.useState<ActiveRouteState | null>(
+    null
+  );
 
   React.useEffect(() => {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -259,6 +412,7 @@ function EditorShell() {
               traceLayer: editorMode === 'layout' ? 'top' : 'top',
               waypoints: [],
               vias: [],
+              isRouted: false,
             },
           },
           current
@@ -296,23 +450,255 @@ function EditorShell() {
   );
 
   const getPinAnchor = React.useCallback(
-    (node: PcbFlowNode, pinId: string, side: 'left' | 'right') => {
-      const pinIndex = node.data.pins.findIndex((pin) => pin.id === pinId);
-      const normalizedIndex =
-        pinIndex < 0 ? 0.5 : (pinIndex + 1) / (node.data.pins.length + 1);
-      const xOffset =
-        side === 'left'
-          ? -node.data.bounds.width / 2
-          : node.data.bounds.width / 2;
-      const yOffset = (normalizedIndex - 0.5) * node.data.bounds.height;
+    (node: PcbFlowNode, pinId: string, rendered = false) => {
+      const isRenderedLayout = rendered && editorMode === 'layout';
+      const visualScale = isRenderedLayout ? layoutVisualScale : 1;
+      const mmToCanvas = isRenderedLayout ? layoutMmToCanvas : 1;
+      const rawWidth = node.data.bounds.width * visualScale * mmToCanvas;
+      const rawHeight = node.data.bounds.height * visualScale * mmToCanvas;
+      const bodyWidth = isRenderedLayout
+        ? Math.max(28, rawWidth)
+        : Math.max(0.1, rawWidth);
+      const bodyHeight = isRenderedLayout
+        ? Math.max(20, rawHeight)
+        : Math.max(0.1, rawHeight);
+      const anchors = createPadAnchors(node.data.pins, bodyWidth, bodyHeight);
+      const anchor = anchors.find((item) => item.id === pinId);
+
+      if (!anchor) {
+        return { x: node.position.x, y: node.position.y };
+      }
+
+      // In layout rendering, React Flow node positions are top-left based.
+      // Handles are positioned inside the node using absolute left/top offsets.
+      if (isRenderedLayout) {
+        return {
+          x: node.position.x + anchor.x,
+          y: node.position.y + anchor.y,
+        };
+      }
 
       return {
-        x: node.position.x + xOffset,
-        y: node.position.y + yOffset,
+        x: node.position.x + (anchor.x - bodyWidth / 2),
+        y: node.position.y + (anchor.y - bodyHeight / 2),
       };
     },
-    []
+    [editorMode, layoutMmToCanvas, layoutVisualScale]
   );
+
+  const startRouteForEdge = React.useCallback(
+    (edgeId: string, clickPoint?: Position) => {
+      const edge = edges.find((candidate) => candidate.id === edgeId);
+      if (!edge?.sourceHandle || !edge.targetHandle) {
+        return;
+      }
+
+      const sourceNode = nodes.find(
+        (candidate) => candidate.id === edge.source
+      );
+      const targetNode = nodes.find(
+        (candidate) => candidate.id === edge.target
+      );
+      if (!sourceNode || !targetNode) {
+        return;
+      }
+
+      const sourceAnchor = getPinAnchor(sourceNode, edge.sourceHandle, true);
+      const targetAnchor = getPinAnchor(targetNode, edge.targetHandle, true);
+
+      const distanceToSource = clickPoint
+        ? Math.hypot(
+            clickPoint.x - sourceAnchor.x,
+            clickPoint.y - sourceAnchor.y
+          )
+        : Number.POSITIVE_INFINITY;
+      const distanceToTarget = clickPoint
+        ? Math.hypot(
+            clickPoint.x - targetAnchor.x,
+            clickPoint.y - targetAnchor.y
+          )
+        : Number.POSITIVE_INFINITY;
+
+      const start =
+        distanceToTarget < distanceToSource ? targetAnchor : sourceAnchor;
+      const end =
+        distanceToTarget < distanceToSource ? sourceAnchor : targetAnchor;
+
+      setActiveRoute({
+        edgeId,
+        start,
+        end,
+        waypoints: [],
+        cursor: start,
+      });
+      setActiveEdgeId(edgeId);
+      setStatus(
+        'Trace tool: click to add segments, click near destination to finish'
+      );
+    },
+    [edges, getPinAnchor, nodes]
+  );
+
+  const finalizeActiveRoute = React.useCallback(
+    (complete: boolean) => {
+      if (!activeRoute) {
+        return;
+      }
+
+      setEdges((current) =>
+        current.map((edge) => {
+          if (edge.id !== activeRoute.edgeId) {
+            return edge;
+          }
+
+          return {
+            ...edge,
+            data: {
+              ...edge.data,
+              waypoints: activeRoute.waypoints,
+              traceLayer: traceToolLayer,
+              traceWidthMm: traceToolWidthMm,
+              isRouted: complete,
+            },
+          };
+        })
+      );
+
+      setStatus(
+        complete
+          ? 'Trace finalized and connected'
+          : 'Partial route saved (guide remains until fully connected)'
+      );
+      setActiveRoute(null);
+    },
+    [activeRoute, setEdges, traceToolLayer, traceToolWidthMm]
+  );
+
+  const onPaneMouseMove = React.useCallback(
+    (event: React.MouseEvent) => {
+      if (!traceToolEnabled || !activeRoute || editorMode !== 'layout') {
+        return;
+      }
+
+      const flow = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+      setActiveRoute((current) =>
+        current ? { ...current, cursor: flow } : current
+      );
+    },
+    [activeRoute, editorMode, screenToFlowPosition, traceToolEnabled]
+  );
+
+  const onPaneClick = React.useCallback(
+    (event: React.MouseEvent) => {
+      if (!traceToolEnabled || !activeRoute || editorMode !== 'layout') {
+        return;
+      }
+
+      const clicked = snapToGrid(
+        screenToFlowPosition({
+          x: event.clientX,
+          y: event.clientY,
+        }),
+        gridSizeMm
+      );
+
+      const distanceToEnd = Math.hypot(
+        clicked.x - activeRoute.end.x,
+        clicked.y - activeRoute.end.y
+      );
+
+      if (distanceToEnd <= Math.max(8, gridSizeMm * 1.8)) {
+        finalizeActiveRoute(true);
+        return;
+      }
+
+      setActiveRoute((current) =>
+        current
+          ? {
+              ...current,
+              waypoints: [...current.waypoints, clicked],
+              cursor: clicked,
+            }
+          : current
+      );
+    },
+    [
+      activeRoute,
+      editorMode,
+      finalizeActiveRoute,
+      gridSizeMm,
+      screenToFlowPosition,
+      traceToolEnabled,
+    ]
+  );
+
+  const onEdgeClick = React.useCallback(
+    (event: React.MouseEvent, edge: PcbFlowEdge) => {
+      if (editorMode !== 'layout' || !traceToolEnabled) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      // If edge is already finalized, just let it be selected for editing
+      if (edge.data?.isRouted) {
+        return;
+      }
+
+      const clickPoint = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+      startRouteForEdge(edge.id, clickPoint);
+    },
+    [editorMode, screenToFlowPosition, startRouteForEdge, traceToolEnabled]
+  );
+
+  const onTraceToolWheel = React.useCallback(
+    (event: React.WheelEvent<HTMLDivElement>) => {
+      if (editorMode !== 'layout' || !traceToolEnabled) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      const delta = event.deltaY < 0 ? 0.05 : -0.05;
+      setTraceToolWidthMm((current) =>
+        Math.max(0.1, Math.min(2.0, Number((current + delta).toFixed(2))))
+      );
+    },
+    [editorMode, traceToolEnabled]
+  );
+
+  React.useEffect(() => {
+    if (!traceToolEnabled || editorMode !== 'layout') {
+      setActiveRoute(null);
+    }
+  }, [editorMode, traceToolEnabled]);
+
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!activeRoute) {
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        setActiveRoute(null);
+        setStatus('Trace tool: route cancelled');
+      }
+
+      if (event.key === 'Enter') {
+        finalizeActiveRoute(false);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activeRoute, finalizeActiveRoute]);
 
   const { nets: derivedNets, pinNetMap } = React.useMemo(
     () => buildNets(nodes, edges),
@@ -431,6 +817,7 @@ function EditorShell() {
         const netName = netLabelByEdgeId.get(edge.id);
         const traceLayer = edge.data?.traceLayer ?? 'top';
         const layerColor = traceLayer === 'top' ? '#dc2626' : '#2563eb';
+        const isRouted = edge.data?.isRouted ?? false;
 
         if (editorMode === 'schematic') {
           return {
@@ -441,6 +828,21 @@ function EditorShell() {
             style: {
               stroke: '#1f2937',
               strokeWidth: 1.5,
+            },
+          };
+        }
+
+        if (!isRouted) {
+          return {
+            ...edge,
+            type: 'default' as const,
+            animated: true,
+            label: netName,
+            style: {
+              stroke: '#64748b',
+              strokeDasharray: '6 4',
+              strokeWidth: 1.4,
+              opacity: 0.9,
             },
           };
         }
@@ -873,8 +1275,8 @@ function EditorShell() {
         return;
       }
 
-      const start = getPinAnchor(sourceNode, activeEdge.sourceHandle, 'right');
-      const end = getPinAnchor(targetNode, activeEdge.targetHandle, 'left');
+      const start = getPinAnchor(sourceNode, activeEdge.sourceHandle, true);
+      const end = getPinAnchor(targetNode, activeEdge.targetHandle, true);
       const splitPoint = activeEdge.data?.waypoints?.[0] ?? {
         x: (start.x + end.x) / 2,
         y: (start.y + end.y) / 2,
@@ -1298,6 +1700,7 @@ function EditorShell() {
                 traceLayer: 'top',
                 waypoints: [],
                 vias: [],
+                isRouted: false,
               },
             }
           : {
@@ -1312,6 +1715,7 @@ function EditorShell() {
                 traceLayer: 'top',
                 waypoints: [],
                 vias: [],
+                isRouted: false,
               },
             }
       );
@@ -1554,19 +1958,26 @@ function EditorShell() {
           </div>
         </aside>
 
-        <main className='h-full min-h-0'>
+        <main className='h-full min-h-0' onWheelCapture={onTraceToolWheel}>
           <ReactFlow
             nodes={visibleNodes}
             edges={renderedEdges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onEdgeClick={onEdgeClick}
             onSelectionChange={onSelectionChange}
             onNodeDragStop={onNodeDragStop}
+            onPaneClick={onPaneClick}
+            onPaneMouseMove={onPaneMouseMove}
             onDragOver={onCanvasDragOver}
             onDrop={onCanvasDrop}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
+            nodesDraggable={!(editorMode === 'layout' && traceToolEnabled)}
+            panOnDrag={!(editorMode === 'layout' && traceToolEnabled)}
+            selectionOnDrag={!(editorMode === 'layout' && traceToolEnabled)}
+            zoomOnScroll={!(editorMode === 'layout' && traceToolEnabled)}
             minZoom={0.05}
             maxZoom={40}
             fitView
@@ -1585,6 +1996,52 @@ function EditorShell() {
               }}
             />
             <Controls />
+            {editorMode === 'layout' && traceToolEnabled && (
+              <Panel position='top-right'>
+                <div className='rounded border border-amber-300 bg-amber-50/95 px-2 py-1 text-[11px] text-amber-950'>
+                  Trace Tool: {traceToolLayer.toUpperCase()} ·{' '}
+                  {traceToolWidthMm.toFixed(2)} mm
+                </div>
+              </Panel>
+            )}
+            {editorMode === 'layout' && activeRoute && (
+              <ViewportPortal>
+                <svg className='pointer-events-none absolute inset-0 overflow-visible'>
+                  <polyline
+                    points={[
+                      activeRoute.start,
+                      ...activeRoute.waypoints,
+                      activeRoute.cursor,
+                    ]
+                      .map((point) => `${point.x},${point.y}`)
+                      .join(' ')}
+                    fill='none'
+                    stroke={traceToolLayer === 'top' ? '#dc2626' : '#2563eb'}
+                    strokeWidth={Math.max(1.25, traceToolWidthMm * 4)}
+                    strokeDasharray='6 4'
+                    strokeLinecap='round'
+                    strokeLinejoin='round'
+                  />
+                  <line
+                    x1={activeRoute.cursor.x}
+                    y1={activeRoute.cursor.y}
+                    x2={activeRoute.end.x}
+                    y2={activeRoute.end.y}
+                    stroke='#64748b'
+                    strokeWidth={1}
+                    strokeDasharray='4 4'
+                  />
+                  <circle
+                    cx={activeRoute.end.x}
+                    cy={activeRoute.end.y}
+                    r={6}
+                    fill='none'
+                    stroke='#16a34a'
+                    strokeWidth={1.5}
+                  />
+                </svg>
+              </ViewportPortal>
+            )}
             {editorMode === 'layout' && showBoardReference && (
               <ViewportPortal>
                 <div
@@ -1890,6 +2347,55 @@ function EditorShell() {
                 />
                 Bottom Layer (Blue)
               </label>
+
+              <p className='mb-1 mt-3 text-xs font-semibold text-slate-700'>
+                Trace Tool
+              </p>
+              <label className='mb-2 flex items-center gap-2 text-xs text-slate-700'>
+                <input
+                  type='checkbox'
+                  checked={traceToolEnabled}
+                  onChange={(event) =>
+                    setTraceToolEnabled(event.target.checked)
+                  }
+                />
+                Enable click-to-route mode
+              </label>
+              <label className='mb-1 block text-xs text-slate-600'>
+                Active Layer
+              </label>
+              <select
+                className='mb-2 w-full rounded border border-slate-300 px-2 py-1 text-sm'
+                value={traceToolLayer}
+                onChange={(event) =>
+                  setTraceToolLayer(
+                    event.target.value === 'bottom' ? 'bottom' : 'top'
+                  )
+                }
+              >
+                <option value='top'>Top (Red)</option>
+                <option value='bottom'>Bottom (Blue)</option>
+              </select>
+              <label className='mb-1 block text-xs text-slate-600'>
+                Trace Width (mm)
+              </label>
+              <input
+                type='number'
+                className='mb-1 w-full rounded border border-slate-300 px-2 py-1 text-sm'
+                min={0.1}
+                max={2}
+                step={0.05}
+                value={traceToolWidthMm}
+                onChange={(event) =>
+                  setTraceToolWidthMm(
+                    Math.max(0.1, Math.min(2, Number(event.target.value)))
+                  )
+                }
+              />
+              <p className='mb-2 text-[11px] text-slate-600'>
+                Wheel while routing adjusts width. Click a guide line to start,
+                click along the path, then click near destination to complete.
+              </p>
 
               <p className='mb-1 mt-3 text-xs font-semibold text-slate-700'>
                 Board Reference
