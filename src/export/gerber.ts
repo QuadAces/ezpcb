@@ -199,6 +199,11 @@ function componentPadDiameterMm(bodyWidth: number, bodyHeight: number) {
   return clamp(Math.min(bodyWidth, bodyHeight) * 0.24, 0.35, 1.2);
 }
 
+function formatSquareApertureMm(sizeMm: number) {
+  const formatted = formatApertureMm(sizeMm);
+  return `${formatted}X${formatted}`;
+}
+
 function writeTraceSegments(
   lines: string[],
   trace: Trace,
@@ -294,9 +299,11 @@ function buildCopperGerbers(flattened: FlattenedPcb) {
     const padDiameter = componentPadDiameterMm(bodyWidth, bodyHeight);
     if (!componentPadDiameterBySize.has(padDiameter)) {
       componentPadDiameterBySize.set(padDiameter, apertureIndex);
-      topLines.push(`%ADD${apertureIndex}C,${formatApertureMm(padDiameter)}*%`);
+      topLines.push(
+        `%ADD${apertureIndex}R,${formatSquareApertureMm(padDiameter)}*%`
+      );
       bottomLines.push(
-        `%ADD${apertureIndex}C,${formatApertureMm(padDiameter)}*%`
+        `%ADD${apertureIndex}R,${formatSquareApertureMm(padDiameter)}*%`
       );
       apertureIndex += 1;
     }

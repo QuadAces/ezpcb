@@ -198,7 +198,13 @@ def add_geometry(
 
 
 def buffered_point(x_mm: float, y_mm: float, diameter_mm: float) -> sg.Polygon:
-    return sg.Point((x_mm, y_mm)).buffer(max(MIN_PAD_MM, diameter_mm) / 2.0)
+    half_size = max(MIN_PAD_MM, diameter_mm) / 2.0
+    return sg.box(
+        x_mm - half_size,
+        y_mm - half_size,
+        x_mm + half_size,
+        y_mm + half_size,
+    )
 
 
 def buffered_trace(points: list[tuple[float, float]], width_mm: float) -> sg.Polygon | None:
