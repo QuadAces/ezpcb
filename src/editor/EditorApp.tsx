@@ -1797,7 +1797,7 @@ function EditorShell() {
   }, [nodes, edges, selectedNodeIds, moduleLibrary, setNodes, setEdges]);
 
   return (
-    <div className='flex min-h-screen flex-col bg-slate-100'>
+    <div className='flex h-screen overflow-hidden bg-slate-100'>
       <header className='flex items-center justify-between border-b border-slate-300 bg-white px-4 py-3'>
         <div>
           <h1 className='text-lg font-semibold'>Modular PCB Creator</h1>
@@ -1861,8 +1861,8 @@ function EditorShell() {
         </div>
       </header>
 
-      <div className='grid flex-1 grid-cols-[260px_1fr_280px] overflow-hidden'>
-        <aside className='overflow-y-auto border-r border-slate-300 bg-white p-3'>
+      <div className='grid min-h-0 flex-1 grid-cols-[260px_1fr_280px] overflow-hidden'>
+        <aside className='min-h-0 overflow-y-auto border-r border-slate-300 bg-white p-3'>
           <h2 className='mb-2 text-sm font-semibold'>Component Library</h2>
           <div className='space-y-2'>
             {COMPONENT_LIBRARY.map((entry, index) => (
@@ -1958,7 +1958,10 @@ function EditorShell() {
           </div>
         </aside>
 
-        <main className='h-full min-h-0' onWheelCapture={onTraceToolWheel}>
+        <main
+          className='min-h-0 h-full overflow-hidden'
+          onWheelCapture={onTraceToolWheel}
+        >
           <ReactFlow
             nodes={visibleNodes}
             edges={renderedEdges}
@@ -2071,7 +2074,7 @@ function EditorShell() {
           </ReactFlow>
         </main>
 
-        <aside className='overflow-y-auto border-l border-slate-300 bg-white p-3'>
+        <aside className='min-h-0 overflow-y-auto border-l border-slate-300 bg-white p-3'>
           <h2 className='mb-2 text-sm font-semibold'>Properties</h2>
           {!activeNode ? (
             !activeEdge ? (
