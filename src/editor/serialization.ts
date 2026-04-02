@@ -57,6 +57,143 @@ function pinToken(nodeId: string, pinId: string) {
   return `${nodeId}:${pinId}`;
 }
 
+type PadSide = 'left' | 'right' | 'top' | 'bottom';
+
+type PadAnchor = {
+  id: string;
+  side: PadSide;
+  x: number;
+  y: number;
+};
+
+function distributePinsAcrossSides(
+  count: number,
+  bodyWidth: number,
+  bodyHeight: number
+) {
+  if (count <= 1) {
+    return { left: 0, right: 1, top: 0, bottom: 0 };
+  }
+
+  if (count === 2) {
+    return { left: 1, right: 1, top: 0, bottom: 0 };
+  }
+
+  if (count === 3) {
+    return { left: 1, right: 1, top: 1, bottom: 0 };
+  }
+
+  const sideOrder: PadSide[] = ['top', 'right', 'bottom', 'left'];
+  const sideLengths: Record<PadSide, number> = {
+    top: bodyWidth,
+    bottom: bodyWidth,
+    left: bodyHeight,
+    right: bodyHeight,
+  };
+
+  const totalLength =
+    sideLengths.top + sideLengths.bottom + sideLengths.left + sideLengths.right;
+
+  const base: Record<PadSide, number> = {
+    top: Math.floor((count * sideLengths.top) / totalLength),
+    right: Math.floor((count * sideLengths.right) / totalLength),
+    bottom: Math.floor((count * sideLengths.bottom) / totalLength),
+    left: Math.floor((count * sideLengths.left) / totalLength),
+  };
+
+  if (count >= 4) {
+    sideOrder.forEach((side) => {
+      if (base[side] === 0) {
+        base[side] = 1;
+      }
+    });
+  }
+
+  const assigned = base.top + base.right + base.bottom + base.left;
+  let remaining = count - assigned;
+
+  const ranking = sideOrder
+    .map((side) => {
+      const exact = (count * sideLengths[side]) / totalLength;
+      return { side, frac: exact - Math.floor(exact) };
+    })
+    .sort((a, b) => b.frac - a.frac);
+
+  let rankIndex = 0;
+  while (remaining > 0) {
+    const side = ranking[rankIndex % ranking.length].side;
+    base[side] += 1;
+    remaining -= 1;
+    rankIndex += 1;
+  }
+
+  while (remaining < 0) {
+    const candidates = sideOrder.filter((side) => base[side] > 1);
+    if (candidates.length === 0) {
+      break;
+    }
+    const side = candidates[rankIndex % candidates.length];
+    base[side] -= 1;
+    remaining += 1;
+    rankIndex += 1;
+  }
+
+  return {
+    left: base.left,
+    right: base.right,
+    top: base.top,
+    bottom: base.bottom,
+  };
+}
+
+function createPadAnchors(
+  pins: Pin[],
+  bodyWidth: number,
+  bodyHeight: number
+): PadAnchor[] {
+  const counts = distributePinsAcrossSides(pins.length, bodyWidth, bodyHeight);
+  const sides: PadSide[] = [];
+
+  for (let i = 0; i < counts.top; i += 1) sides.push('top');
+  for (let i = 0; i < counts.right; i += 1) sides.push('right');
+  for (let i = 0; i < counts.bottom; i += 1) sides.push('bottom');
+  for (let i = 0; i < counts.left; i += 1) sides.push('left');
+
+  const bySide: Record<PadSide, string[]> = {
+    top: [],
+    right: [],
+    bottom: [],
+    left: [],
+  };
+
+  pins.forEach((pin, index) => {
+    const side = sides[index % sides.length] ?? 'right';
+    bySide[side].push(pin.id);
+  });
+
+  const anchors: PadAnchor[] = [];
+
+  (['top', 'right', 'bottom', 'left'] as const).forEach((side) => {
+    const sidePins = bySide[side];
+    sidePins.forEach((pinId, index) => {
+      const t = (index + 1) / (sidePins.length + 1);
+      const x =
+        side === 'left' ? 0 : side === 'right' ? bodyWidth : t * bodyWidth;
+      const y =
+        side === 'top' ? 0 : side === 'bottom' ? bodyHeight : t * bodyHeight;
+
+      anchors.push({
+        id: pinId,
+        side,
+        x,
+        y,
+      });
+    });
+  });
+
+  return anchors;
+}
+
 function parsePinToken(token: string): PinRef {
   const [nodeId, pinId] = token.split(':');
   return { nodeId, pinId };
@@ -129,19 +266,28 @@ export function buildNets(nodes: PcbFlowNode[], edges: Edge[]) {
 function getPinAnchor(
   node: PcbFlowNode,
   pinId: string,
-  side: 'left' | 'right'
+  rendered = false
 ): Position {
-  const pinIndex = node.data.pins.findIndex((pin) => pin.id === pinId);
-  const normalizedIndex =
-    pinIndex < 0 ? 0.5 : (pinIndex + 1) / (node.data.pins.length + 1);
-  const xOffset =
-    side === 'left' ? -node.data.bounds.width / 2 : node.data.bounds.width / 2;
-  const yOffset = (normalizedIndex - 0.5) * node.data.bounds.height;
+  const visualScale = rendered
+    ? Math.max(1, node.data.layoutVisualScale ?? 1)
+    : 1;
+  const bodyWidth = Math.max(0.1, node.data.bounds.width * visualScale);
+  const bodyHeight = Math.max(0.1, node.data.bounds.height * visualScale);
+  const anchors = createPadAnchors(node.data.pins, bodyWidth, bodyHeight);
+  const anchor = anchors.find((item) => item.id === pinId);
+
+  if (!anchor) {
+    return { x: node.position.x, y: node.position.y };
+  }
 
   return {
-    x: node.position.x + xOffset,
-    y: node.position.y + yOffset,
+    x: node.position.x + (anchor.x - bodyWidth / 2),
+    y: node.position.y + (anchor.y - bodyHeight / 2),
   };
+}
+
+function lerp(a: number, b: number, t: number) {
+  return a + (b - a) * t;
 }
 
 function traceFromEdge(
@@ -159,14 +305,57 @@ function traceFromEdge(
     return null;
   }
 
-  const start = getPinAnchor(sourceNode, edge.sourceHandle, 'right');
-  const end = getPinAnchor(targetNode, edge.targetHandle, 'left');
+  const start = getPinAnchor(sourceNode, edge.sourceHandle, false);
+  const end = getPinAnchor(targetNode, edge.targetHandle, false);
+  const startRendered = getPinAnchor(sourceNode, edge.sourceHandle, true);
+  const endRendered = getPinAnchor(targetNode, edge.targetHandle, true);
+
+  const startDelta = {
+    x: startRendered.x - start.x,
+    y: startRendered.y - start.y,
+  };
+  const endDelta = {
+    x: endRendered.x - end.x,
+    y: endRendered.y - end.y,
+  };
+
+  const storedWaypoints = edge.data?.waypoints ?? [];
+  const waypoints = storedWaypoints.map((point, index) => {
+    const t = (index + 1) / (storedWaypoints.length + 1);
+    const dx = lerp(startDelta.x, endDelta.x, t);
+    const dy = lerp(startDelta.y, endDelta.y, t);
+    return {
+      x: point.x - dx,
+      y: point.y - dy,
+    };
+  });
+
+  const viaDelta = {
+    x: (startDelta.x + endDelta.x) / 2,
+    y: (startDelta.y + endDelta.y) / 2,
+  };
+
+  const vias = (edge.data?.vias ?? []).map((via) => ({
+    ...via,
+    x: via.x - viaDelta.x,
+    y: via.y - viaDelta.y,
+  }));
+
   const rawPoints: Position[] = [start, ...(edge.data?.waypoints ?? []), end];
+  const encodedPoints: Position[] = [start, ...waypoints, end];
   const points = rawPoints.filter((point, index) => {
     if (index === 0) {
       return true;
     }
     const prev = rawPoints[index - 1];
+    return prev.x !== point.x || prev.y !== point.y;
+  });
+
+  const normalizedPoints = encodedPoints.filter((point, index) => {
+    if (index === 0) {
+      return true;
+    }
+    const prev = encodedPoints[index - 1];
     return prev.x !== point.x || prev.y !== point.y;
   });
 
@@ -179,8 +368,8 @@ function traceFromEdge(
     netId,
     layer: edge.data?.traceLayer ?? sourceNode.data.layer,
     widthMm: edge.data?.traceWidthMm ?? 0.25,
-    points,
-    vias: edge.data?.vias ?? [],
+    points: points.length > 1 ? normalizedPoints : [start, end],
+    vias,
   };
 }
 

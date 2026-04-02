@@ -993,10 +993,19 @@ function EditorShell() {
   ]);
 
   const buildProject = React.useCallback(() => {
+    const encodedNodes = nodes.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        // Preserve visual scale metadata so serialization can normalize routed points.
+        layoutVisualScale,
+      },
+    }));
+
     return buildProjectFromEditor(
       'project_local',
       'Modular PCB',
-      nodes,
+      encodedNodes,
       edges,
       moduleLibrary,
       {
@@ -1015,6 +1024,7 @@ function EditorShell() {
     boardCenter.y,
     boardHeightMm,
     boardWidthMm,
+    layoutVisualScale,
     edges,
     gridSizeMm,
     moduleLibrary,
