@@ -131,6 +131,14 @@ function createPositionMap(nodes: PcbFlowNode[]) {
   );
 }
 
+function toPhysicalMm(value: number, visualScale: number) {
+  if (!Number.isFinite(visualScale) || visualScale <= 1) {
+    return value;
+  }
+
+  return value / visualScale;
+}
+
 function EditorShell() {
   const layoutMmToCanvas = 1;
   const layoutVisualScale = 10;
@@ -928,7 +936,7 @@ function EditorShell() {
         gridSizeMm
       )
     );
-    setStatus('Board reference fitted to components + margin');
+    setStatus('Board dimensions fitted to components + margin');
   }, [boardFitMarginMm, gridSizeMm, nodes]);
 
   const onNodeDragStop = React.useCallback(
@@ -993,27 +1001,59 @@ function EditorShell() {
   ]);
 
   const buildProject = React.useCallback(() => {
+    const exportScale = layoutVisualScale;
+    const physicalBoardCenter = {
+      x: toPhysicalMm(boardCenter.x, exportScale),
+      y: toPhysicalMm(boardCenter.y, exportScale),
+    };
+
     const encodedNodes = nodes.map((node) => ({
       ...node,
+      position: {
+        x: toPhysicalMm(node.position.x, exportScale),
+        y: toPhysicalMm(node.position.y, exportScale),
+      },
       data: {
         ...node.data,
-        // Preserve visual scale metadata so serialization can normalize routed points.
-        layoutVisualScale,
+        // Export operates entirely in physical mm.
+        layoutVisualScale: 1,
       },
     }));
+
+    const encodedEdges = edges.map((edge) => {
+      const waypoints = (edge.data?.waypoints ?? []).map((point) => ({
+        x: toPhysicalMm(point.x, exportScale),
+        y: toPhysicalMm(point.y, exportScale),
+      }));
+
+      const vias = (edge.data?.vias ?? []).map((via) => ({
+        ...via,
+        x: toPhysicalMm(via.x, exportScale),
+        y: toPhysicalMm(via.y, exportScale),
+      }));
+
+      return {
+        ...edge,
+        data: {
+          ...edge.data,
+          waypoints,
+          vias,
+        },
+      };
+    });
 
     return buildProjectFromEditor(
       'project_local',
       'Modular PCB',
       encodedNodes,
-      edges,
+      encodedEdges,
       moduleLibrary,
       {
         width: boardWidthMm,
         height: boardHeightMm,
         origin: {
-          x: boardCenter.x - boardWidthMm / 2,
-          y: boardCenter.y - boardHeightMm / 2,
+          x: physicalBoardCenter.x - boardWidthMm / 2,
+          y: physicalBoardCenter.y - boardHeightMm / 2,
         },
         twoLayer: true,
       },
@@ -1864,6 +1904,7 @@ function EditorShell() {
                 />
                 Show board outline
               </label>
+
               <label className='mb-1 block text-xs text-slate-600'>
                 Width (mm)
               </label>

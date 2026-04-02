@@ -19,8 +19,12 @@ async function runPython(
   outputDir: string,
   options?: GerberExportOptions
 ) {
-  const workspacePython = path.join(process.cwd(), '.venv', 'bin', 'python');
-  const commands = [workspacePython, 'python3', 'python'];
+  const workspacePythonCandidates = [
+    path.join(process.cwd(), '.venv', 'bin', 'python'),
+    path.join(process.cwd(), '.venv', 'Scripts', 'python.exe'),
+    'python3',
+    'python',
+  ];
   let lastError: unknown;
 
   const args = [scriptPath, '--input', inputPath, '--output', outputDir];
@@ -28,7 +32,7 @@ async function runPython(
     args.push('--silk-stroke-mm', String(options.silkscreenStrokeMm));
   }
 
-  for (const command of commands) {
+  for (const command of workspacePythonCandidates) {
     try {
       await execFileAsync(command, args);
       return;
@@ -74,23 +78,27 @@ export async function generateGerberZip(
   const inputPath = path.join(tmpRoot, 'pcb.json');
   const outputDir = path.join(tmpRoot, 'gerber');
 
-  await fs.mkdir(outputDir, { recursive: true });
-  await fs.writeFile(inputPath, JSON.stringify(flattened, null, 2), 'utf8');
+  try {
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(inputPath, JSON.stringify(flattened, null, 2), 'utf8');
 
-  await runPython(scriptPath, inputPath, outputDir, options);
+    await runPython(scriptPath, inputPath, outputDir, options);
 
-  const zip = new JSZip();
-  const entries = await fs.readdir(outputDir, { withFileTypes: true });
+    const zip = new JSZip();
+    const entries = await fs.readdir(outputDir, { withFileTypes: true });
 
-  await Promise.all(
-    entries
-      .filter((entry) => entry.isFile())
-      .map(async (entry) => {
-        const fullPath = path.join(outputDir, entry.name);
-        const content = await fs.readFile(fullPath);
-        zip.file(entry.name, content);
-      })
-  );
+    await Promise.all(
+      entries
+        .filter((entry) => entry.isFile())
+        .map(async (entry) => {
+          const fullPath = path.join(outputDir, entry.name);
+          const content = await fs.readFile(fullPath);
+          zip.file(entry.name, content);
+        })
+    );
 
-  return zip.generateAsync({ type: 'nodebuffer' });
+    return zip.generateAsync({ type: 'nodebuffer' });
+  } finally {
+    await fs.rm(tmpRoot, { recursive: true, force: true });
+  }
 }
