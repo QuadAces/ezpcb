@@ -9,6 +9,12 @@ import { FlattenedPcb } from '@/types/pcb';
 
 const execFileAsync = promisify(execFile);
 
+type ExecFileError = Error & {
+  code?: string;
+  stdout?: string;
+  stderr?: string;
+};
+
 export type GerberExportOptions = {
   silkscreenStrokeMm?: number;
 };
@@ -19,42 +25,50 @@ async function runPython(
   outputDir: string,
   options?: GerberExportOptions
 ) {
-  const workspacePythonCandidates = [
+  const pythonCandidates = [
+    process.env.PYTHON,
+    process.env.PYTHON_PATH,
     path.join(process.cwd(), '.venv', 'bin', 'python'),
+    path.join(process.cwd(), '.venv', 'bin', 'python3'),
     path.join(process.cwd(), '.venv', 'Scripts', 'python.exe'),
+    '/var/lang/bin/python3.12',
+    '/var/lang/bin/python3.11',
+    '/var/lang/bin/python3.10',
+    '/usr/local/bin/python3',
+    '/usr/bin/python3',
+    '/opt/homebrew/bin/python3',
     'python3',
     'python',
-  ];
-  let lastError: unknown;
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  let lastError: ExecFileError | undefined;
 
   const args = [scriptPath, '--input', inputPath, '--output', outputDir];
   if (typeof options?.silkscreenStrokeMm === 'number') {
     args.push('--silk-stroke-mm', String(options.silkscreenStrokeMm));
   }
 
-  for (const command of workspacePythonCandidates) {
+  for (const command of pythonCandidates) {
     try {
       await execFileAsync(command, args);
       return;
     } catch (error) {
-      lastError = error;
+      const execError = error as ExecFileError;
+      lastError = execError;
+
+      // Keep searching only if the executable does not exist.
+      if (execError.code !== 'ENOENT') {
+        break;
+      }
     }
   }
 
   if (lastError instanceof Error) {
-    const errorWithStreams = lastError as Error & {
-      stdout?: string;
-      stderr?: string;
-    };
     const parts = [
       `Unable to run Python Gerber generator at ${scriptPath}.`,
       `Cause: ${lastError.message}`,
-      errorWithStreams.stderr
-        ? `stderr: ${errorWithStreams.stderr.trim()}`
-        : '',
-      errorWithStreams.stdout
-        ? `stdout: ${errorWithStreams.stdout.trim()}`
-        : '',
+      `Tried Python candidates: ${pythonCandidates.join(', ')}`,
+      lastError.stderr ? `stderr: ${lastError.stderr.trim()}` : '',
+      lastError.stdout ? `stdout: ${lastError.stdout.trim()}` : '',
     ].filter(Boolean);
 
     throw new Error(parts.join(' | '));
@@ -79,6 +93,7 @@ export async function generateGerberZip(
   const outputDir = path.join(tmpRoot, 'gerber');
 
   try {
+    await fs.access(scriptPath);
     await fs.mkdir(outputDir, { recursive: true });
     await fs.writeFile(inputPath, JSON.stringify(flattened, null, 2), 'utf8');
 
