@@ -35,4 +35,7 @@ export type TraceEdgeData = {
   isRouted?: boolean;
 };
 
-export type PcbFlowEdge = Edge<TraceEdgeData, 'editableTrace' | 'default'>;
+export type PcbFlowEdge = Edge<
+  TraceEdgeData,
+  'editableTrace' | 'default' | 'straight'
+>;

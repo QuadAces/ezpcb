@@ -1,4 +1,9 @@
-import { Handle, NodeProps, Position } from '@xyflow/react';
+import {
+  Handle,
+  NodeProps,
+  Position,
+  useUpdateNodeInternals,
+} from '@xyflow/react';
 import * as React from 'react';
 
 import { PcbFlowNode } from '@/editor/types';
@@ -146,7 +151,25 @@ function createPadAnchors(
   return anchors;
 }
 
-export default function PcbNode({ data, selected }: PcbNodeProps) {
+export default function PcbNode({ id, data, selected }: PcbNodeProps) {
+  const updateNodeInternals = useUpdateNodeInternals();
+
+  React.useEffect(() => {
+    // Keep edge anchors aligned with rendered pin handle locations when
+    // switching modes or when component geometry/pin count changes.
+    updateNodeInternals(id);
+  }, [
+    id,
+    data.viewMode,
+    data.kind,
+    data.pins.length,
+    data.bounds.width,
+    data.bounds.height,
+    data.layoutMmToCanvas,
+    data.layoutVisualScale,
+    updateNodeInternals,
+  ]);
+
   const isTextAnnotation = data.kind === 'textAnnotation';
   const isLayoutComponent =
     data.viewMode === 'layout' && data.kind === 'component';
@@ -247,6 +270,20 @@ export default function PcbNode({ data, selected }: PcbNodeProps) {
           </text>
         </svg>
         {padAnchors.map((anchor) => {
+          const halfPadLength = padLength / 2;
+          const tipOffsetX =
+            anchor.side === 'left'
+              ? -halfPadLength
+              : anchor.side === 'right'
+              ? halfPadLength
+              : 0;
+          const tipOffsetY =
+            anchor.side === 'top'
+              ? -halfPadLength
+              : anchor.side === 'bottom'
+              ? halfPadLength
+              : 0;
+
           return (
             <React.Fragment key={anchor.id}>
               <Handle
@@ -254,8 +291,8 @@ export default function PcbNode({ data, selected }: PcbNodeProps) {
                 type='target'
                 position={Position.Left}
                 style={{
-                  left: anchor.x,
-                  top: anchor.y,
+                  left: anchor.x + tipOffsetX,
+                  top: anchor.y + tipOffsetY,
                   width: 1,
                   height: 1,
                   opacity: 0,
@@ -269,8 +306,8 @@ export default function PcbNode({ data, selected }: PcbNodeProps) {
                 type='source'
                 position={Position.Left}
                 style={{
-                  left: anchor.x,
-                  top: anchor.y,
+                  left: anchor.x + tipOffsetX,
+                  top: anchor.y + tipOffsetY,
                   width: 1,
                   height: 1,
                   opacity: 0,

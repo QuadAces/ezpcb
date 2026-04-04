@@ -56,6 +56,7 @@ type ActiveRouteState = {
   end: Position;
   waypoints: Position[];
   cursor: Position;
+  edgeData?: PcbFlowEdge['data'];
 };
 
 type PersistedEditorState = {
@@ -289,7 +290,7 @@ function createPadAnchors(
 function EditorShell() {
   const layoutMmToCanvas = 1;
   const layoutVisualScale = 10;
-  const { screenToFlowPosition, setCenter } = useReactFlow<
+  const { screenToFlowPosition, setCenter, getZoom } = useReactFlow<
     PcbFlowNode,
     PcbFlowEdge
   >();
@@ -327,6 +328,7 @@ function EditorShell() {
   const [catalogResults, setCatalogResults] = React.useState<JlcPart[]>([]);
   const [catalogSearching, setCatalogSearching] = React.useState(false);
   const [editorMode, setEditorMode] = React.useState<EditorMode>('schematic');
+  const previousEditorModeRef = React.useRef<EditorMode>('schematic');
   const [showTopLayer, setShowTopLayer] = React.useState(true);
   const [showBottomLayer, setShowBottomLayer] = React.useState(true);
   const [showBoardReference, setShowBoardReference] = React.useState(true);
@@ -389,15 +391,35 @@ function EditorShell() {
   }, [editorMode, layoutPositions, schematicPositions, setNodes]);
 
   React.useEffect(() => {
+    const wasLayout = previousEditorModeRef.current === 'layout';
+    const isEnteringLayout = !wasLayout && editorMode === 'layout';
+    previousEditorModeRef.current = editorMode;
+
     if (editorMode !== 'layout') {
       return;
     }
 
-    setCenter(boardCenter.x, boardCenter.y, {
-      zoom: layoutViewZoom,
-      duration: 250,
-    });
-  }, [boardCenter.x, boardCenter.y, editorMode, layoutViewZoom, setCenter]);
+    setCenter(
+      boardCenter.x,
+      boardCenter.y,
+      isEnteringLayout
+        ? {
+            zoom: getZoom(),
+            duration: 250,
+          }
+        : {
+            zoom: layoutViewZoom,
+            duration: 250,
+          }
+    );
+  }, [
+    boardCenter.x,
+    boardCenter.y,
+    editorMode,
+    getZoom,
+    layoutViewZoom,
+    setCenter,
+  ]);
 
   const onConnect = React.useCallback(
     (connection: Connection) => {
@@ -472,6 +494,20 @@ function EditorShell() {
       // In layout rendering, React Flow node positions are top-left based.
       // Handles are positioned inside the node using absolute left/top offsets.
       if (isRenderedLayout) {
+        if (typeof document !== 'undefined') {
+          const handleElement = document.querySelector<HTMLElement>(
+            `.react-flow__handle[data-nodeid="${node.id}"][data-handleid="${pinId}"]`
+          );
+
+          if (handleElement) {
+            const rect = handleElement.getBoundingClientRect();
+            return screenToFlowPosition({
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+            });
+          }
+        }
+
         return {
           x: node.position.x + anchor.x,
           y: node.position.y + anchor.y,
@@ -483,7 +519,7 @@ function EditorShell() {
         y: node.position.y + (anchor.y - bodyHeight / 2),
       };
     },
-    [editorMode, layoutMmToCanvas, layoutVisualScale]
+    [editorMode, layoutMmToCanvas, layoutVisualScale, screenToFlowPosition]
   );
 
   const startRouteForEdge = React.useCallback(
@@ -530,6 +566,7 @@ function EditorShell() {
         end,
         waypoints: [],
         cursor: start,
+        edgeData: edge.data,
       });
       setActiveEdgeId(edgeId);
       setStatus(
@@ -545,6 +582,14 @@ function EditorShell() {
         return;
       }
 
+      const existingVias = activeRoute.edgeData?.vias ?? [];
+      const waypointVias = activeRoute.waypoints.map((waypoint) => ({
+        x: waypoint.x,
+        y: waypoint.y,
+        drillMm: 0.3,
+        padMm: traceToolWidthMm * 1.5,
+      }));
+
       setEdges((current) =>
         current.map((edge) => {
           if (edge.id !== activeRoute.edgeId) {
@@ -556,6 +601,9 @@ function EditorShell() {
             data: {
               ...edge.data,
               waypoints: activeRoute.waypoints,
+              vias: complete
+                ? [...existingVias, ...waypointVias]
+                : existingVias,
               traceLayer: traceToolLayer,
               traceWidthMm: traceToolWidthMm,
               isRouted: complete,
@@ -660,7 +708,7 @@ function EditorShell() {
 
   const onTraceToolWheel = React.useCallback(
     (event: React.WheelEvent<HTMLDivElement>) => {
-      if (editorMode !== 'layout' || !traceToolEnabled) {
+      if (editorMode !== 'layout' || !traceToolEnabled || !event.shiftKey) {
         return;
       }
 
@@ -835,7 +883,7 @@ function EditorShell() {
         if (!isRouted) {
           return {
             ...edge,
-            type: 'default' as const,
+            type: 'straight' as const,
             animated: true,
             label: netName,
             style: {
@@ -1980,7 +2028,7 @@ function EditorShell() {
             nodesDraggable={!(editorMode === 'layout' && traceToolEnabled)}
             panOnDrag={!(editorMode === 'layout' && traceToolEnabled)}
             selectionOnDrag={!(editorMode === 'layout' && traceToolEnabled)}
-            zoomOnScroll={!(editorMode === 'layout' && traceToolEnabled)}
+            zoomOnScroll
             minZoom={0.05}
             maxZoom={40}
             fitView
@@ -2042,6 +2090,16 @@ function EditorShell() {
                     stroke='#16a34a'
                     strokeWidth={1.5}
                   />
+                  {activeRoute.waypoints.map((waypoint, index) => (
+                    <circle
+                      key={`waypoint-${index}`}
+                      cx={waypoint.x}
+                      cy={waypoint.y}
+                      r={Math.max(2, traceToolWidthMm * 2)}
+                      fill={traceToolLayer === 'top' ? '#dc2626' : '#2563eb'}
+                      opacity={0.5}
+                    />
+                  ))}
                 </svg>
               </ViewportPortal>
             )}
@@ -2396,8 +2454,9 @@ function EditorShell() {
                 }
               />
               <p className='mb-2 text-[11px] text-slate-600'>
-                Wheel while routing adjusts width. Click a guide line to start,
-                click along the path, then click near destination to complete.
+                Hold Shift + mouse wheel to adjust width. Click a guide line to
+                start, click along the path, then click near destination to
+                complete.
               </p>
 
               <p className='mb-1 mt-3 text-xs font-semibold text-slate-700'>
