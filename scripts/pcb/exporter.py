@@ -268,8 +268,8 @@ class GerberExporter:
             pad_diameter = component_pad_diameter_mm(body_width, body_height)
 
             for anchor in anchors:
-                pin_x = x_mm + (safe_float(anchor.get("x"), 0.0) - body_width / 2)
-                pin_y = y_mm + (safe_float(anchor.get("y"), 0.0) - body_height / 2)
+                pin_x = x_mm + safe_float(anchor.get("x"), 0.0)
+                pin_y = y_mm + safe_float(anchor.get("y"), 0.0)
                 local_xy = to_board_local(pin_x, pin_y, self.board)
                 net_name = net_by_pin.get(str(anchor.get("id", "")))
                 add_geometry(board, layer, buffered_point(*local_xy, pad_diameter), net_name)

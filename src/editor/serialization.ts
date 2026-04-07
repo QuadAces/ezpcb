@@ -263,16 +263,9 @@ export function buildNets(nodes: PcbFlowNode[], edges: Edge[]) {
   return { nets, pinNetMap };
 }
 
-function getPinAnchor(
-  node: PcbFlowNode,
-  pinId: string,
-  rendered = false
-): Position {
-  const visualScale = rendered
-    ? Math.max(1, node.data.layoutVisualScale ?? 1)
-    : 1;
-  const bodyWidth = Math.max(0.1, node.data.bounds.width * visualScale);
-  const bodyHeight = Math.max(0.1, node.data.bounds.height * visualScale);
+function getPinAnchor(node: PcbFlowNode, pinId: string): Position {
+  const bodyWidth = Math.max(0.1, node.data.bounds.width);
+  const bodyHeight = Math.max(0.1, node.data.bounds.height);
   const anchors = createPadAnchors(node.data.pins, bodyWidth, bodyHeight);
   const anchor = anchors.find((item) => item.id === pinId);
 
@@ -280,14 +273,11 @@ function getPinAnchor(
     return { x: node.position.x, y: node.position.y };
   }
 
+  // Export coordinates are in physical mm with top-left node positioning.
   return {
-    x: node.position.x + (anchor.x - bodyWidth / 2),
-    y: node.position.y + (anchor.y - bodyHeight / 2),
+    x: node.position.x + anchor.x,
+    y: node.position.y + anchor.y,
   };
-}
-
-function lerp(a: number, b: number, t: number) {
-  return a + (b - a) * t;
 }
 
 function traceFromEdge(
@@ -310,52 +300,13 @@ function traceFromEdge(
     return null;
   }
 
-  const start = getPinAnchor(sourceNode, edge.sourceHandle, false);
-  const end = getPinAnchor(targetNode, edge.targetHandle, false);
-  const startRendered = getPinAnchor(sourceNode, edge.sourceHandle, true);
-  const endRendered = getPinAnchor(targetNode, edge.targetHandle, true);
-
-  const startDelta = {
-    x: startRendered.x - start.x,
-    y: startRendered.y - start.y,
-  };
-  const endDelta = {
-    x: endRendered.x - end.x,
-    y: endRendered.y - end.y,
-  };
-
-  const storedWaypoints = edge.data?.waypoints ?? [];
-  const waypoints = storedWaypoints.map((point, index) => {
-    const t = (index + 1) / (storedWaypoints.length + 1);
-    const dx = lerp(startDelta.x, endDelta.x, t);
-    const dy = lerp(startDelta.y, endDelta.y, t);
-    return {
-      x: point.x - dx,
-      y: point.y - dy,
-    };
-  });
-
-  const viaDelta = {
-    x: (startDelta.x + endDelta.x) / 2,
-    y: (startDelta.y + endDelta.y) / 2,
-  };
-
-  const vias = (edge.data?.vias ?? []).map((via) => ({
-    ...via,
-    x: via.x - viaDelta.x,
-    y: via.y - viaDelta.y,
-  }));
-
-  const rawPoints: Position[] = [start, ...(edge.data?.waypoints ?? []), end];
-  const encodedPoints: Position[] = [start, ...waypoints, end];
-  const points = rawPoints.filter((point, index) => {
-    if (index === 0) {
-      return true;
-    }
-    const prev = rawPoints[index - 1];
-    return prev.x !== point.x || prev.y !== point.y;
-  });
-
+  const start = getPinAnchor(sourceNode, edge.sourceHandle);
+  const end = getPinAnchor(targetNode, edge.targetHandle);
+  const encodedPoints: Position[] = [
+    start,
+    ...(edge.data?.waypoints ?? []),
+    end,
+  ];
   const normalizedPoints = encodedPoints.filter((point, index) => {
     if (index === 0) {
       return true;
@@ -373,8 +324,8 @@ function traceFromEdge(
     netId,
     layer: edge.data?.traceLayer ?? sourceNode.data.layer,
     widthMm: edge.data?.traceWidthMm ?? 0.25,
-    points: points.length > 1 ? normalizedPoints : [start, end],
-    vias,
+    points: normalizedPoints.length > 1 ? normalizedPoints : [start, end],
+    vias: edge.data?.vias ?? [],
   };
 }
 

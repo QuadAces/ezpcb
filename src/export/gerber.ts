@@ -328,8 +328,8 @@ function buildCopperGerbers(flattened: FlattenedPcb) {
     targetLines.push(`D${aperture}*`);
     anchors.forEach((anchor) => {
       const global = {
-        x: component.position.x + (anchor.x - bodyWidth / 2),
-        y: component.position.y + (anchor.y - bodyHeight / 2),
+        x: component.position.x + anchor.x,
+        y: component.position.y + anchor.y,
       };
       const local = toBoardLocal(global, flattened);
       targetLines.push(`${gerberXY(local)}D03*`);
